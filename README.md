@@ -56,6 +56,11 @@ The ignore list can consist of any Xpath supported by lxml and is intended to re
 
 With the -v argument, the script can optionally query all firewalls through the Panorama IP. In this mode the only open port required is TCP 443 between the script and the Panorama, instead of TCP 443 between the script and all firewalls involved in the run.
 
+### Requirements
+
+- [requests](https://pypi.org/project/requests/) (install with ```pip3 install requests```)
+- [lxml](https://pypi.org/project/lxml/) (install with ```pip3 install lxml```)
+
 ### License
 
 This project is licensed under the [MIT License](LICENSE).
