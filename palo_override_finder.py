@@ -2,7 +2,7 @@
 firewalls
 usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-i IGNORE_XPATH]
                                [-t TARGET] [-d] [-o FILE_PATH]
-                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}] panorama""""""
+                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}] panorama"""
 import sys
 import re
 import logging
