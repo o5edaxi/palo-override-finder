@@ -1,9 +1,8 @@
 """This module enables discovering local overrides and configurations on Panorama-managed
 firewalls
-usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY]
-                               [-i IGNORE_XPATH] [-d]
-                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
-                               panorama"""
+usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-i IGNORE_XPATH]
+                               [-t TARGET] [-d] [-o FILE_PATH]
+                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}] panorama""""""
 import sys
 import re
 import logging
