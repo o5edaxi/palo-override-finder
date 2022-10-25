@@ -279,7 +279,7 @@ if __name__ == '__main__':
     parser.add_argument('-r', '--max-open', action='store', default=10,
                         help='How many firewalls the script will query simultaneously. Default: 10')
     parser.add_argument('-k', '--api-key', action='store', type=str,
-                        help='How many firewalls the script will query simultaneously. Default: '
+                        help='A valid API key with read privileges for the devices. Default: '
                              f'retrieve the key from {CFG_FILENAME} file')
     parser.add_argument('-i', '--ignore-xpath', action='append',
                         help='Xpaths to ignore when checking for local firewall configurations. All'
