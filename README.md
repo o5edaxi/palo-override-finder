@@ -1,6 +1,6 @@
 # Palo Alto Override and Local Configuration Finder
 
-This script will help you more quickly identify configuration overrides and unwanted local configurations on Palo Alto firewalls that are being managed by a Panorama system. The script will scan the Panorama, identify connected devices, and then compare template and running configurations of all the firewalls to find overlaps. It will also highlight any part of the running configuration that is not part of a template and is not covered by an optional ignore list. The output is a list of Xpaths and can be either printed to the terminal or placed in a timestamped file.
+This script will help you more quickly identify [configuration overrides](https://docs.paloaltonetworks.com/panorama/10-2/panorama-admin/manage-firewalls/manage-templates-and-template-stacks/override-a-template-setting) and unwanted local configurations on Palo Alto firewalls that are being managed by a Panorama system. The script will scan the Panorama, identify connected devices, and then compare template and running configurations of all the firewalls to find overlaps. It will also highlight any part of the running configuration that is not part of a template and is not covered by an optional ignore list. The output is a list of Xpaths and can be either printed to the terminal or placed in a timestamped file.
 
 The script has been tested with PanOS 10.1.
 
