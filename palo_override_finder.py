@@ -24,6 +24,7 @@ XPATH_SERIAL = '/response/result/devices/entry/serial/text()'
 XPATH_HOSTNAME = '/response/result/devices/entry/hostname/text()'
 XPATH_MGMT_IP = '/response/result/devices/entry/ip-address/text()'
 CFG_FILENAME = 'palo_override_finder.cfg'
+CONN_TIMEOUT = 30
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
@@ -67,7 +68,7 @@ def connected_fw_list(panorama, session):
     try:
         logging.info('Getting fw list from panorama %s', panorama)
         response = session.get(f'https://{panorama}/api/?type=op&cmd=<show><devices><connected>'
-                               f'</connected></devices></show>')
+                               f'</connected></devices></show>', timeout=CONN_TIMEOUT)
         logging.debug('Got response from Panorama with code %s:\n%s', response.status_code,
                       response.text)
         response.raise_for_status()
@@ -112,7 +113,7 @@ def get_fw_config(fw_ip, session, cfg_type, panorama=None, fw_sn=None):
         show_config_url = f'https://{host}/api/?type=op&cmd=<show><config><{cfg_type}>' \
                           f'</{cfg_type}></config></show>{target}'
         logging.debug('[%s] GETting %s', session, show_config_url)
-        response = session.get(show_config_url)
+        response = session.get(show_config_url, timeout=CONN_TIMEOUT)
         logging.debug('[%s] Got response with code %s:\n%s', session, response.status_code,
                       response.text)
         response.raise_for_status()
