@@ -140,10 +140,21 @@ def get_fw_config(fw_ip, session, cfg_type, panorama=None, fw_sn=None):
         raise
 
 
-def detect_overrides(template_tree, running_tree):
+def detect_overrides(template_tree, running_tree, ignore_overrides_list):
     """Search for the template xpaths in the running config of the firewall to detect overrides"""
     template_xpath_list = []
     overrides_list = []
+    overrides_exception_list = []
+    for xpath in ignore_overrides_list:
+        logging.debug('Analysing overrides ignore list xpath %s', xpath)
+        for element in running_tree.xpath(xpath):
+            if not len(element):
+                logging.debug('Overrides ignore list xpath %s identifies running xpath %s', xpath,
+                              running_tree.getpath(element))
+                # We have to resolve_xpath() both the exception list and the detected overrides, since one comes from
+                # the running config and the other one comes from the template config and so the elements can be ordered
+                # differently etc.
+                overrides_exception_list.append(resolve_xpath(running_tree.getpath(element), running_tree))
     for tag in template_tree.iter():
         # Search only in terminal nodes to avoid false positives. To compare the strings we convert
         # for example "entry[1]" into "entry[@name='foo'] to make it more deterministic
@@ -153,7 +164,7 @@ def detect_overrides(template_tree, running_tree):
             if '/config/shared/content-preview/' in tag_xpath:
                 logging.debug('Skipping content preview xpath')
                 continue
-            logging.debug('%s is a terminal node, appending to xpath list', tag)
+            logging.debug('%s is a terminal node, appending to xpath list', tag_xpath)
             template_xpath_list.append(resolve_xpath(tag_xpath, template_tree))
     for xpath in template_xpath_list:
         logging.debug('Looking in the running config for xpath %s', xpath)
@@ -161,13 +172,15 @@ def detect_overrides(template_tree, running_tree):
         if tpl_run_match:
             # There is a match but could be a self-closing tag, e.g. <group-mapping/>. These exist
             # By default in the config
-            logging.debug('Found xpath %s one or more times in running config. Checking that it is '
-                          'not empty', xpath)
+            logging.debug('Found xpath %s one or more times in running config. Checking that it is not empty', xpath)
             for match in tpl_run_match:
                 if match.text or match.attrib:
-                    logging.debug('Found xpath in running config. Appending to override list %s',
-                                  xpath)
-                    overrides_list.append(xpath)
+                    if xpath in overrides_exception_list:
+                        logging.debug('Found override %s but skipping due to override ignore list', xpath)
+                    else:
+                        logging.debug('Found xpath in running config. Appending to override list %s',
+                                        xpath)
+                        overrides_list.append(xpath)
                 else:
                     logging.debug('Xpath is empty in running config, ignoring... %s',
                                   running_tree.getpath(match))
@@ -206,7 +219,7 @@ def detect_local_conf(running_tree, ignore_list):
     return local_confs_list
 
 
-def check_firewall(fw_ip_list, fw_sn_list, ignore_list, thread_session, panorama=None):
+def check_firewall(fw_ip_list, fw_sn_list, ignore_list, thread_session, ignore_overrides_list, panorama=None):
     """Thread that contacts a given list of firewalls with the provided requests.Session() to
     retrieve the running and template configs, then checks them for overrides and local configs.
     Updates global variable with the results in format {'sn': ['xpath1', 'xpath2', ...], ...}"""
@@ -241,7 +254,7 @@ def check_firewall(fw_ip_list, fw_sn_list, ignore_list, thread_session, panorama
                               thread_session, fw_ip)
                 thread_session.close()
             logging.debug('[%s] Checking for overrides for fw %s', thread_session, fw_sn)
-            found_overrides = detect_overrides(tpl_tree, run_tree)
+            found_overrides = detect_overrides(tpl_tree, run_tree, ignore_overrides_list)
             logging.debug('[%s] Checking for local configs for fw %s', thread_session, fw_sn)
             found_local_cfg = detect_local_conf(run_tree, ignore_list)
             if found_overrides:
@@ -289,6 +302,11 @@ if __name__ == '__main__':
                              'ignore list is applied when checking for local configurations, NOT '
                              'when checking for overrides. Default: MGMT IP config, Panorama, and '
                              f'HA (see the {CFG_FILENAME} file)')
+    parser.add_argument('-j', '--ignore-overrides-xpath', action='append', help='Xpaths to ignore when checking for '
+                                                                               'overrides. All the nodes identified by '
+                                                                               'the given Xpaths will be ignored. Add '
+                                                                               'multiple Xpaths by passing the -j '
+                                                                               'argument multiple times. Default: None')
     parser.add_argument('-t', '--target', action='append',
                         help='Limit analysis to the given serials.\nExample: -t 01230 -t 01231 -t '
                              '01232 -t 01233\nDefault: analyze all firewalls')
@@ -332,7 +350,6 @@ if __name__ == '__main__':
                     IGNORE_LIST.append(mem.replace(r'\\', '\\'))
                 logging.info('Found ignore list %s', IGNORE_LIST)
             else:
-                IGNORE_LIST = False
                 logging.info('Xpath ignore list not found.')
         except configparser.Error as err:
             logging.critical(
@@ -342,6 +359,26 @@ if __name__ == '__main__':
     else:
         IGNORE_LIST = args.ignore_xpath
         logging.info('Found ignore list %s', IGNORE_LIST)
+    if not args.ignore_overrides_xpath:
+        try:
+            IGNORE_OVERRIDES_LIST = []
+            logging.info('Attempting to read overrides ignore list from %s', CFG_FILENAME)
+            config.read(CFG_FILENAME)
+            key_section = config['Limits']
+            if key_section.get('IGNORE_OVERRIDES_LIST'):
+                for mem in key_section.get('IGNORE_OVERRIDES_LIST').split('\n'):
+                    IGNORE_OVERRIDES_LIST.append(mem.replace(r'\\', '\\'))
+                logging.info('Found ignore list %s', IGNORE_OVERRIDES_LIST)
+            else:
+                logging.info('Xpath overrides ignore list not found.')
+        except configparser.Error as err:
+            logging.critical(
+                'ERROR: unable to read config file %s with error %s\nPlease ensure the file exists '
+                'or pass the Xpath list via the --ignore-overrides-xpath argument.', CFG_FILENAME, err)
+            sys.exit(1)
+    else:
+        IGNORE_OVERRIDES_LIST = args.ignore_overrides_xpath
+        logging.info('Found overrides ignore list %s', IGNORE_OVERRIDES_LIST)
     if not args.target:
         try:
             TARGETS = []
@@ -392,6 +429,8 @@ if __name__ == '__main__':
                          'running the script with the --ignore-certs argument. Exiting...')
         sys.exit(1)
     logging.info('Retrieved firewall list:\n%s', fw_dict)
+    if TARGETS:
+        logging.warning('Limiting analysis to %d of %d firewalls due to target list', len(TARGETS), len(fw_dict))
     # Prepare session pool
     thr_dict = {}
     for i in range(0, args.max_open):
@@ -420,22 +459,20 @@ if __name__ == '__main__':
             # IP list, SN list, ignore list, session to use for all connections, optional
             # panorama IP
             fw_thread = Thread(target=check_firewall, args=([fw_dict[x][0] for x in sn_list],
-                                                            sn_list, IGNORE_LIST, thr_sess,
+                                                            sn_list, IGNORE_LIST, thr_sess, IGNORE_OVERRIDES_LIST,
                                                             args.panorama if
-                                                            args.query_via_panorama else None))
+                                                            args.query_via_panorama else None,))
             logging.info('Starting thread %s', fw_thread)
             fw_thread.start()
             thr_list.append(fw_thread)
         if time.time() - start_time > 5:
-            logging.warning('Contacted %d out of %d firewalls...', len([x for x in thr_list
-                                                                        if not x.is_alive()]),
+            logging.warning('Done %d out of %d firewalls...', len([x for x in thr_list
+                                                                  if not x.is_alive()]),
                             len(fw_dict))
     logging.info('Done Starting threads. Joining threads...')
     time.sleep(3)
     while any(x.is_alive() for x in thr_list):
-        logging.warning('Contacted %d out of %d firewalls...', len([x for x in thr_list if not
-                                                                    x.is_alive()]),
-                        len(fw_dict))
+        logging.warning('Done %d out of %d firewalls...', len([x for x in thr_list if not x.is_alive()]), len(fw_dict))
         time.sleep(5)
     logging.warning('Done analyzing configurations.')
     # Greppable output
@@ -453,11 +490,11 @@ if __name__ == '__main__':
             skipped += 1
             continue
         try:
-            override_amount = len(overrides_dict[fw_sn])
+            override_amount = len(set(overrides_dict[fw_sn]))
         except KeyError:
             override_amount = 0
         try:
-            local_cfg_amount = len(local_cfg_dict[fw_sn])
+            local_cfg_amount = len(set(local_cfg_dict[fw_sn]))
         except KeyError:
             local_cfg_amount = 0
         if override_amount or local_cfg_amount:
@@ -477,13 +514,13 @@ if __name__ == '__main__':
             fw_text += '#' * 50 + '\n\n'
             if fw_sn in overrides_dict:
                 fw_text += '\tOVERRIDES FOUND ON DEVICE:\n\n'
-                for override in overrides_dict[fw_sn]:
-                    fw_text += '\t\t' + str(override) + '\n'
+                for override in sorted(set(overrides_dict[fw_sn])):
+                    fw_text += '\t\t' + str(override).replace('[not(@name)]', '') + '\n'
                 fw_text += '\n'
             if fw_sn in local_cfg_dict:
                 fw_text += '\tLOCAL CONFIGURATIONS FOUND ON DEVICE:\n\n'
-                for local_bit in local_cfg_dict[fw_sn]:
-                    fw_text += '\t\t' + str(local_bit) + '\n'
+                for local_bit in sorted(set(local_cfg_dict[fw_sn])):
+                    fw_text += '\t\t' + str(local_bit).replace('[not(@name)]', '') + '\n'
             try:
                 if args.print_results:
                     print(fw_text)
