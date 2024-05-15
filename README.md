@@ -1,8 +1,8 @@
 # Palo Alto Override and Local Configuration Finder
 
-This script will help you more quickly identify [configuration overrides](https://docs.paloaltonetworks.com/panorama/10-2/panorama-admin/manage-firewalls/manage-templates-and-template-stacks/override-a-template-setting) and unwanted local configurations on Palo Alto firewalls that are being managed by a Panorama system. The script will scan the Panorama, identify connected devices, and then compare template and running configurations of all the firewalls to find overlaps. It will also highlight any part of the running configuration that is not part of a template and is not covered by an optional ignore list. The output is a list of Xpaths and can be either printed to the terminal or placed in a timestamped file.
+This script will help you more quickly identify [configuration overrides](https://docs.paloaltonetworks.com/panorama/10-2/panorama-admin/manage-firewalls/manage-templates-and-template-stacks/override-a-template-setting) and unwanted local configurations on Palo Alto firewalls that are being managed by a Panorama system. The script will scan the Panorama, identify connected devices, and then compare template and running configurations of all the firewalls to find overlaps, with an optional ignore list. It will also highlight any part of the running configuration that is not part of a template and is not covered by an ignore list. The output is a list of Xpaths and can be either printed to the terminal or placed in a timestamped file.
 
-The script has been tested with PanOS 10.1.
+The script has been tested with PanOS 10.1, 10.2.
 
 ### Usage
 
@@ -34,6 +34,9 @@ The basic execution of the script requires an API key for an account with read p
                       times. This ignore list is applied when checking for local configurations, NOT when checking
                       for overrides. Default: MGMT IP config, Panorama, and HA (see the palo_override_finder.cfg
                       file)
+-j IGNORE_OVERRIDES_XPATH, --ignore-overrides-xpath IGNORE_OVERRIDES_XPATH
+                        Xpaths to ignore when checking for overrides. All the nodes identified by the given Xpaths
+                        will be ignored. Add multiple Xpaths by passing the -j argument multiple times. Default: None
 -t TARGET, --target TARGET
                       Limit analysis to the given serials. Example: -t 01230 -t 01231 -t 01232 -t 01233 Default:
                       analyze all firewalls
@@ -50,7 +53,7 @@ The basic execution of the script requires an API key for an account with read p
 
 In addition to detecting overrides, the script will also look for any XML elements in the running config that have 1. no descendants, 2. some kind of attribute or text, and 3. are not identified by the ignore list. The default ignore list can be found in the [palo_override_finder.cfg](palo_override_finder.cfg) file and will cause the script to ignore any local configuration of the MGMT port, Panorama addresses, high availability, as well as some predefined reports and default crypto profiles that are present in any freshly reset firewall.
 
-The ignore list can consist of any Xpath supported by lxml and is intended to reduce noise in the results. It is only applied while searching for local configurations, and will NOT filter out detected overrides.
+The ignore list can consist of any Xpath supported by lxml and is intended to reduce noise in the results.
 
 ### Panorama Proxying
 
