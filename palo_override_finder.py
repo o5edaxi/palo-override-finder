@@ -299,7 +299,7 @@ if __name__ == '__main__':
                         help='Add this option to use Panorama as a proxy when querying the firewalls. Default: False')
     parser.add_argument('-c', '--ignore-certs', action='store_true',
                         help="Don't check for valid certificates when connecting. Does not affect connections to SCM."
-                             'Default: Validate certificates')
+                             ' Default: Validate certificates')
     parser.add_argument('-r', '--max-open', action='store', default=10,
                         help='How many firewalls the script will query simultaneously. Default: 10')
     parser.add_argument('-k', '--api-key', action='store', type=str,
