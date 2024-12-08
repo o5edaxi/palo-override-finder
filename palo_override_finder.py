@@ -1,8 +1,8 @@
 """This module enables discovering local overrides and configurations on Panorama-managed
 firewalls
-usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-i IGNORE_XPATH]
+usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-b BEARER_TOKEN] [-i IGNORE_XPATH]
                                [-t TARGET] [-d] [-o FILE_PATH]
-                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}] panorama"""
+                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}] panorama_or_scm"""
 import sys
 import re
 import logging
@@ -10,6 +10,7 @@ import time
 import argparse
 import configparser
 import os
+import json
 from threading import Thread
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ XPATH_HOSTNAME = '/response/result/devices/entry/hostname/text()'
 XPATH_MGMT_IP = '/response/result/devices/entry/ip-address/text()'
 CFG_FILENAME = 'palo_override_finder.cfg'
 CONN_TIMEOUT = 30
+SCM_KEYWORD = 'scm'  # Magic argument to switch to SCM mode
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
@@ -45,8 +47,7 @@ def resolve_xpath(xpa, tre):
             logging.debug('Done expanding xpath %s into %s', xpa, resolved_xpath)
             return resolved_xpath
         try:
-            name_attribute = tre.xpath(str(entries[0][0]) + str(entries[0][1]) + str(entries[0][2])
-                                       +'/@name')
+            name_attribute = tre.xpath(str(entries[0][0]) + str(entries[0][1]) + str(entries[0][2]) + '/@name')
             logging.debug('Filling %s into xpath %s', name_attribute, xpa)
             if name_attribute:
                 resolved_xpath = str(entries[0][0]) + str(entries[0][1]) + "[@name='" +\
@@ -62,29 +63,38 @@ def resolve_xpath(xpa, tre):
             raise
 
 
-def connected_fw_list(panorama, session):
-    """Queries Panorama and outputs a dictionary in the format
+def connected_fw_list(endpoint, session):
+    """Queries Panorama/SCM and outputs a dictionary in the format
     {'fw_serial': ('mgmt_ip', 'hostname')}"""
     try:
-        logging.info('Getting fw list from panorama %s', panorama)
-        response = session.get(f'https://{panorama}/api/?type=op&cmd=<show><devices><connected>'
-                               f'</connected></devices></show>', timeout=CONN_TIMEOUT)
-        logging.debug('Got response from Panorama with code %s:\n%s', response.status_code,
+        logging.info('Getting fw list from Panorama/SCM %s', endpoint)
+        if USE_SCM:
+            response = session.get(f'https://{endpoint}/config/setup/v1/devices', timeout=CONN_TIMEOUT)
+        else:
+            response = session.get(f'https://{endpoint}/api/?type=op&cmd=<show><devices><connected>'
+                                   f'</connected></devices></show>', timeout=CONN_TIMEOUT)
+        logging.debug('Got response from Panorama/SCM with code %s:\n%s', response.status_code,
                       response.text)
         response.raise_for_status()
-        fw_xml = etree.ElementTree(etree.fromstring(response.text))
-        serials = fw_xml.xpath(XPATH_SERIAL)
-        mgmt_ips = fw_xml.xpath(XPATH_MGMT_IP)
-        hostnames = fw_xml.xpath(XPATH_HOSTNAME)
+        if USE_SCM:
+            scm_response = json.loads(response.text)
+            serials = [a['id'] for a in scm_response['data'] if a['is_connected']]
+            mgmt_ips = [a['ip_address'] for a in scm_response['data'] if a['is_connected']]
+            hostnames = [a['hostname'] for a in scm_response['data'] if a['is_connected']]
+        else:
+            fw_xml = etree.ElementTree(etree.fromstring(response.text))
+            serials = fw_xml.xpath(XPATH_SERIAL)
+            mgmt_ips = fw_xml.xpath(XPATH_MGMT_IP)
+            hostnames = fw_xml.xpath(XPATH_HOSTNAME)
         if not serials:
-            logger.critical('Retrieved empty firewall list from Panorama')
-            raise ValueError('Retrieved empty firewall list from Panorama')
+            logger.critical('Retrieved empty firewall list from Panorama/SCM')
+            raise ValueError('Retrieved empty firewall list from Panorama/SCM')
         if not len(serials) == len(mgmt_ips) == len(hostnames):
             logger.critical('Retrieved serial list is not equal to the number of '
                             'firewalls/hostnames')
             raise ValueError('Retrieved serial list is not equal to the number of '
                              'firewalls/hostnames')
-        logging.warning('Found %s firewalls connected to Panorama', len(serials))
+        logging.warning('Found %s firewalls connected to Panorama/SCM', len(serials))
         ip_name_tuple = tuple(zip(mgmt_ips, hostnames))
         found_fw_dict = dict(zip(serials, ip_name_tuple))
         logging.debug('Built firewall dictionary:\n%s', found_fw_dict)
@@ -93,11 +103,11 @@ def connected_fw_list(panorama, session):
         logger.critical('Panorama response is malformed: %s', err)
         raise
     except requests.exceptions.HTTPError:
-        logger.critical('Received HTTP code %s while querying Panorama at %s', response.status_code,
-                        panorama)
+        logger.critical('Received HTTP code %s while querying Panorama/SCM at %s', response.status_code,
+                        endpoint)
         raise
     except requests.exceptions.RequestException as err:
-        logger.critical('Error querying Panorama: %s', err)
+        logger.critical('Error querying Panorama/SCM: %s', err)
         raise
 
 
@@ -179,7 +189,7 @@ def detect_overrides(template_tree, running_tree, ignore_overrides_list):
                         logging.debug('Found override %s but skipping due to override ignore list', xpath)
                     else:
                         logging.debug('Found xpath in running config. Appending to override list %s',
-                                        xpath)
+                                      xpath)
                         overrides_list.append(xpath)
                 else:
                     logging.debug('Xpath is empty in running config, ignoring... %s',
@@ -281,20 +291,22 @@ def file_maker(fw_sn, text, root):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Scan for local configurations and overrides in '
-                                                 'Palo Alto Panorama environments.')
-    parser.add_argument('panorama', type=str, help='Panorama IP address or hostname')
+    parser = argparse.ArgumentParser(description='Scan for local configurations and overrides in Palo Alto Panorama and'
+                                                 ' Strata Cloud Manager environments.')
+    parser.add_argument('panorama_or_scm', type=str, help='Panorama IP address or hostname. Enter "scm" to use Strata '
+                        'Cloud Manager instead.')
     parser.add_argument('-v', '--query-via-panorama', action='store_true',
-                        help='Add this option to use Panorama as a proxy when querying the '
-                             'firewalls. Default: False')
+                        help='Add this option to use Panorama as a proxy when querying the firewalls. Default: False')
     parser.add_argument('-c', '--ignore-certs', action='store_true',
-                        help="Don't check for valid certificates when connecting. "
-                             "Default: Validate certificates")
+                        help="Don't check for valid certificates when connecting. Does not affect connections to SCM."
+                             'Default: Validate certificates')
     parser.add_argument('-r', '--max-open', action='store', default=10,
                         help='How many firewalls the script will query simultaneously. Default: 10')
     parser.add_argument('-k', '--api-key', action='store', type=str,
-                        help='A valid API key with read privileges for the devices. Default: '
-                             f'retrieve the key from {CFG_FILENAME} file')
+                        help='A valid firewall or Panorama API key with read privileges for the devices. '
+                             f'Default: retrieve the key from {CFG_FILENAME} file')
+    parser.add_argument('-b', '--bearer_token', action='store', type=str, help='A Strata Cloud Manager API Bearer Token'
+                        f' with read privileges to List Devices. Default: retrieve the key from {CFG_FILENAME} file')
     parser.add_argument('-i', '--ignore-xpath', action='append',
                         help='Xpaths to ignore when checking for local firewall configurations. All'
                              ' the nodes identified by the given Xpaths will be ignored. Add '
@@ -303,10 +315,8 @@ if __name__ == '__main__':
                              'when checking for overrides. Default: MGMT IP config, Panorama, and '
                              f'HA (see the {CFG_FILENAME} file)')
     parser.add_argument('-j', '--ignore-overrides-xpath', action='append', help='Xpaths to ignore when checking for '
-                                                                               'overrides. All the nodes identified by '
-                                                                               'the given Xpaths will be ignored. Add '
-                                                                               'multiple Xpaths by passing the -j '
-                                                                               'argument multiple times. Default: None')
+                        'overrides. All the nodes identified by the given Xpaths will be ignored. Add multiple Xpaths '
+                        'by passing the -j argument multiple times. Default: None')
     parser.add_argument('-t', '--target', action='append',
                         help='Limit analysis to the given serials.\nExample: -t 01230 -t 01231 -t '
                              '01232 -t 01233\nDefault: analyze all firewalls')
@@ -321,6 +331,7 @@ if __name__ == '__main__':
                                                                   'ERROR', 'CRITICAL'],
                         default='WARNING', help='Logging message verbosity. Default: WARNING')
     args = parser.parse_args()
+    USE_SCM = True if args.panorama_or_scm == SCM_KEYWORD else False
     logging.basicConfig(level=args.debug_level, format='%(asctime)s [%(levelname)s] %(message)s')
     logging.info('Starting with args %s', args)
     config = configparser.ConfigParser()
@@ -333,7 +344,7 @@ if __name__ == '__main__':
             logging.info('Successfully retrieved API key')
         except configparser.Error as err:
             logging.critical('ERROR: unable to read config file %s with error %s\nPlease ensure the'
-                             ' file exists or pass the API key via the --api-key argument.',
+                             ' file exists or pass the API key / Bearer token via the --api-key argument.',
                              CFG_FILENAME, err)
             sys.exit(1)
     else:
@@ -418,16 +429,54 @@ if __name__ == '__main__':
     else:
         FILE_PATH = args.file_path
         logging.info('Found targets list %s', FILE_PATH)
-    pra_req = requests.Session()
-    logging.debug('Session to contact Panorama is %s', pra_req)
-    pra_req.headers.update({'X-PAN-KEY': API_KEY})
-    pra_req.verify = not args.ignore_certs
-    try:
-        fw_dict = connected_fw_list(args.panorama, pra_req)
-    except requests.exceptions.SSLError:
-        logging.critical('The Panorama TLS certificate is untrusted. If this is expected, consider '
-                         'running the script with the --ignore-certs argument. Exiting...')
-        sys.exit(1)
+    if USE_SCM:
+        try:
+            logging.info('Attempting to read SCM API endpoint from %s', CFG_FILENAME)
+            config.read(CFG_FILENAME)
+            key_section = config['SCM']
+            SCM_FQDN = key_section.get('SCM_FQDN')
+            if not SCM_FQDN:
+                logging.critical('SCM FQDN %s in configuration is not valid', SCM_FQDN)
+                sys.exit(1)
+            logging.info('Using SCM API endpoint %s', SCM_FQDN)
+        except configparser.Error as err:
+            logging.critical(
+                'ERROR: unable to read config file %s with error %s\nPlease ensure the file exists '
+                'or pass the file path via the --file-path argument.', CFG_FILENAME, err)
+            sys.exit(1)
+        if not args.bearer_token:
+            try:
+                logging.info('Attempting to read Bearer token from %s', CFG_FILENAME)
+                config.read(CFG_FILENAME)
+                key_section = config['SCM']
+                BEARER_TOKEN = str(key_section.get('BEARER_TOKEN'))
+                logging.info('Successfully retrieved Bearer token')
+            except configparser.Error as err:
+                logging.critical('ERROR: unable to read config file %s with error %s\nPlease ensure the'
+                                 ' file exists or pass the API key / Bearer token via the --api-key argument.',
+                                 CFG_FILENAME, err)
+                sys.exit(1)
+        else:
+            BEARER_TOKEN = args.bearer_token
+            logging.info('Successfully retrieved API key or Bearer token')
+        if args.query_via_panorama:
+            logging.warning('Ignoring -v argument due to Strata Cloud Manager mode')
+            args.query_via_panorama = False
+        scm_req = requests.Session()
+        logging.debug('Session to contact SCM is %s', scm_req)
+        scm_req.headers.update({'Accept': 'application/json', 'Authorization': f'Bearer {BEARER_TOKEN}'})
+        fw_dict = connected_fw_list(SCM_FQDN, scm_req)
+    else:
+        pra_req = requests.Session()
+        logging.debug('Session to contact Panorama is %s', pra_req)
+        pra_req.headers.update({'X-PAN-KEY': API_KEY})
+        pra_req.verify = not args.ignore_certs
+        try:
+            fw_dict = connected_fw_list(args.panorama_or_scm, pra_req)
+        except requests.exceptions.SSLError:
+            logging.critical('The Panorama TLS certificate is untrusted. If this is expected, consider '
+                             'running the script with the --ignore-certs argument. Exiting...')
+            sys.exit(1)
     logging.info('Retrieved firewall list:\n%s', fw_dict)
     if TARGETS:
         logging.warning('Limiting analysis to %d of %d firewalls due to target list', len(TARGETS), len(fw_dict))
@@ -460,7 +509,7 @@ if __name__ == '__main__':
             # panorama IP
             fw_thread = Thread(target=check_firewall, args=([fw_dict[x][0] for x in sn_list],
                                                             sn_list, IGNORE_LIST, thr_sess, IGNORE_OVERRIDES_LIST,
-                                                            args.panorama if
+                                                            args.panorama_or_scm if
                                                             args.query_via_panorama else None,))
             logging.info('Starting thread %s', fw_thread)
             fw_thread.start()
