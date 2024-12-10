@@ -1,8 +1,10 @@
 """This module enables discovering local overrides and configurations on Panorama-managed
 firewalls
-usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-b BEARER_TOKEN] [-i IGNORE_XPATH]
-                               [-t TARGET] [-d] [-o FILE_PATH]
-                               [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}] panorama_or_scm"""
+usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-b BEARER_TOKEN]
+                               [--scm_client_id SCM_CLIENT_ID] [--scm_client_secret SCM_CLIENT_SECRET]
+                               [--scm_tsg_id SCM_TSG_ID] [-i IGNORE_XPATH] [-j IGNORE_OVERRIDES_XPATH] [-t TARGET]
+                               [-d] [-o FILE_PATH] [-x {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+                               panorama_or_scm"""
 import sys
 import re
 import logging
@@ -78,7 +80,9 @@ def connected_fw_list(endpoint, session):
         response.raise_for_status()
         if USE_SCM:
             scm_response = json.loads(response.text)
-            serials = [a['id'] for a in scm_response['data'] if a['is_connected']]
+            # ['serial_number'] is returned but undocumented as of 2024/12/10
+            # https://pan.dev/scm/api/config/ngfw/setup/list-devices/
+            serials = [a['serial_number'] for a in scm_response['data'] if a['is_connected']]
             mgmt_ips = [a['ip_address'] for a in scm_response['data'] if a['is_connected']]
             hostnames = [a['hostname'] for a in scm_response['data'] if a['is_connected']]
         else:
@@ -290,6 +294,29 @@ def file_maker(fw_sn, text, root):
         out.write(text)
 
 
+def request_bearer(endpoint, cid, secret, tsg):
+    """https://pan.dev/scm/docs/access-tokens/"""
+    hub_req = requests.Session()
+    logging.debug('Session to request Bearer token from Hub API is %s', hub_req)
+    hub_req.headers.update({'Content-Type': 'application/json'})
+    hub_req.auth = (cid, secret)  # Recommended to put these in Basic Auth instead of the POST body
+    auth_obj = {'scope': f'tsg_id:{tsg}',
+                'grant_type': 'client_credentials'}
+    try:
+        response = hub_req.post(f'https://{endpoint}/oauth2/access_token', json=auth_obj, timeout=CONN_TIMEOUT)
+        logging.debug('Got response from SCM with code %s when retrieving Bearer token', response.status_code)
+        response.raise_for_status()
+        hub_response = json.loads(response.text)
+        logging.info('Got json response of length %d', len(hub_response))
+        return hub_response['client_credentials']
+    except requests.exceptions.HTTPError:
+        logger.critical('Received HTTP code %s while querying SCM at %s', response.status_code, endpoint)
+        raise
+    except requests.exceptions.RequestException as err:
+        logger.critical('Error querying SCM: %s', err)
+        raise
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Scan for local configurations and overrides in Palo Alto Panorama and'
                                                  ' Strata Cloud Manager environments.')
@@ -306,6 +333,19 @@ if __name__ == '__main__':
                         help='A valid firewall or Panorama API key with read privileges for the devices. '
                              f'Default: retrieve the key from {CFG_FILENAME} file')
     parser.add_argument('-b', '--bearer_token', action='store', type=str, help='A Strata Cloud Manager API Bearer Token'
+                        f' with read privileges to List Devices. This token is only valid for 15 minutes. Generate it '
+                        f'from client_id and client_secret following https://pan.dev/scm/docs/getstarted/. Default: '
+                        f'retrieve the token from BEARER_TOKEN in {CFG_FILENAME} file')
+    parser.add_argument('--scm_client_id', action='store', type=str, help='A Strata Cloud Manager Service Account '
+                        f'client_id with read privileges to List Devices. Default: retrieve the key from {CFG_FILENAME}'
+                        f' file, unless a BEARER_TOKEN is passed instead.')
+    parser.add_argument('--scm_client_secret', action='store', type=str, help='A Strata Cloud Manager Service Account '
+                        f'client_secret with read privileges to List Devices. Default: retrieve the key from '
+                        f'{CFG_FILENAME} file, unless a BEARER_TOKEN is passed instead.')
+    parser.add_argument('--scm_tsg_id', action='store', type=str, help='The TSG ID in which the Strata Cloud Manager '
+                        'managing the devices is located. This, along with scm_client_id and scm_client_secret, is '
+                        'required to generate the BEARER_TOKEN unless this token is passed to the script directly. The '
+                        'Bearer token, however, only lasts 15 minutes.'
                         f' with read privileges to List Devices. Default: retrieve the key from {CFG_FILENAME} file')
     parser.add_argument('-i', '--ignore-xpath', action='append',
                         help='Xpaths to ignore when checking for local firewall configurations. All'
@@ -341,6 +381,9 @@ if __name__ == '__main__':
             config.read(CFG_FILENAME)
             key_section = config['API Key']
             API_KEY = str(key_section.get('API_KEY'))
+            if not API_KEY:
+                logging.critical('API_KEY not passed as argument and is empty in config. Exiting...')
+                sys.exit(1)
             logging.info('Successfully retrieved API key')
         except configparser.Error as err:
             logging.critical('ERROR: unable to read config file %s with error %s\nPlease ensure the'
@@ -439,25 +482,60 @@ if __name__ == '__main__':
                 logging.critical('SCM FQDN %s in configuration is not valid', SCM_FQDN)
                 sys.exit(1)
             logging.info('Using SCM API endpoint %s', SCM_FQDN)
+            SCM_AUTH_FQDN = key_section.get('SCM_AUTH_FQDN')
+            if not SCM_AUTH_FQDN:
+                logging.critical('SCM AUTH FQDN %s in configuration is not valid', SCM_AUTH_FQDN)
+                sys.exit(1)
         except configparser.Error as err:
             logging.critical(
                 'ERROR: unable to read config file %s with error %s\nPlease ensure the file exists '
                 'or pass the file path via the --file-path argument.', CFG_FILENAME, err)
             sys.exit(1)
         if not args.bearer_token:
-            try:
-                logging.info('Attempting to read Bearer token from %s', CFG_FILENAME)
-                config.read(CFG_FILENAME)
-                key_section = config['SCM']
-                BEARER_TOKEN = str(key_section.get('BEARER_TOKEN'))
-                logging.info('Successfully retrieved Bearer token')
-            except configparser.Error as err:
-                logging.critical('ERROR: unable to read config file %s with error %s\nPlease ensure the'
-                                 ' file exists or pass the API key / Bearer token via the --api-key argument.',
-                                 CFG_FILENAME, err)
-                sys.exit(1)
+            logging.info('Bearer token not passed as argument. Checking client_id, client_secret, and tsg_id to '
+                         'generate it')
+            if args.scm_client_id and args.scm_client_secret and args.scm_tsg_id:
+                logging.info('Generating Bearer token for TSG ID %s using provided credentials', args.scm_tsg_id)
+                BEARER_TOKEN = request_bearer(SCM_AUTH_FQDN, args.scm_client_id, args.scm_client_secret,
+                                              args.scm_tsg_id)
+            else:
+                logging.warning('Bearer token or complete credentials to generate it were not passed as argument. '
+                                'Checking in configuration file')
+                try:
+                    logging.info('Attempting to read Bearer token from %s', CFG_FILENAME)
+                    config.read(CFG_FILENAME)
+                    key_section = config['SCM']
+                    BEARER_TOKEN = str(key_section.get('BEARER_TOKEN'))
+                    logging.info('Successfully retrieved Bearer token')
+                except configparser.Error as err:
+                    logging.info('Bearer token not found in configuration file, looking for CLIENT_ID and CLIENT_SECRET'
+                                 ' and TSG_ID instead')
+                    try:
+                        key_section = config['SCM']
+                        logging.info('Attempting to read CLIENT_ID from %s', CFG_FILENAME)
+                        CLIENT_ID = str(key_section.get('CLIENT_ID'))
+                        logging.info('Attempting to read CLIENT_SECRET from %s', CFG_FILENAME)
+                        CLIENT_SECRET = str(key_section.get('CLIENT_SECRET'))
+                        logging.info('Attempting to read TSG_ID from %s', CFG_FILENAME)
+                        TSG_ID = str(key_section.get('TSG_ID'))
+                        if not (CLIENT_ID and CLIENT_SECRET and TSG_ID):
+                            logging.critical('One of CLIENT_ID, CLIENT_SECRET, or TSG_ID are empty in config file. '
+                                             'Exiting...')
+                            sys.exit(1)
+                        logging.info('Successfully retrieved credentials from configuration file. Requesting Bearer '
+                                     'token')
+                        BEARER_TOKEN = request_bearer(SCM_AUTH_FQDN, CLIENT_ID, CLIENT_SECRET, TSG_ID)
+                        logging.info('Successfully generated Bearer token')
+                    except configparser.Error as err:
+                        logging.critical('ERROR: unable to read config file %s with error %s\nPlease ensure the'
+                                         ' file exists and contains CLIENT_ID, CLIENT_SECRET, and TSG_ID, or pass the '
+                                         'credentials as arguments instead.', CFG_FILENAME, err)
+                        sys.exit(1)
         else:
             BEARER_TOKEN = args.bearer_token
+            if not BEARER_TOKEN:
+                logging.critical('BEARER_TOKEN not passed as argument and is empty in config. Exiting...')
+                sys.exit(1)
             logging.info('Successfully retrieved API key or Bearer token')
         if args.query_via_panorama:
             logging.warning('Ignoring -v argument due to Strata Cloud Manager mode')
