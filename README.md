@@ -2,7 +2,7 @@
 
 This script will help you more quickly identify [configuration overrides](https://docs.paloaltonetworks.com/panorama/10-2/panorama-admin/manage-firewalls/manage-templates-and-template-stacks/override-a-template-setting) and unwanted local configurations on Palo Alto firewalls that are being managed by a Panorama or Strata Cloud Manager. The script will scan the Panorama or SCM API, identify connected devices, and then compare template and running configurations of all the firewalls to find overlaps, with an optional ignore list. It will also highlight any part of the running configuration that is not part of a template and is not covered by an ignore list. The output is a list of Xpaths and can be either printed to the terminal or placed in a timestamped file.
 
-The script has been tested with PanOS 10.1, 10.2.
+The script has been tested with PanOS 10.1, 10.2, 11.1.
 
 ### Usage
 
@@ -17,6 +17,7 @@ usage: palo_override_finder.py [-h] [-v] [-c] [-r MAX_OPEN] [-k API_KEY] [-b BEA
 Example:
 
   $ python3 palo_override_finder.py 192.0.2.1
+  $ python3 palo_override_finder.py local-panorama.internal.example
   $ python3 palo_override_finder.py scm
 ```
                                
