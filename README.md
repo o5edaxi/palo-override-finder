@@ -88,7 +88,7 @@ With the -v argument, the script can optionally query all firewalls through the 
 
 ### Strata Cloud Manager
 
-By passing "scm" instead of the Panorama hostname, the script will take a SCM API Bearer token (or alternatively, client_id client_secret and TSG ID, needed to generate the token) and retrieve the list of firewalls from SCM instead. The rest of the script works as before, querying the firewalls directly at their private IP address.
+By passing "scm" instead of the Panorama hostname, the script will take a SCM API Bearer token (or alternatively, client_id client_secret and TSG ID, needed to generate the token) and retrieve the list of firewalls from SCM instead. The rest of the script works as before, querying the firewalls directly at their private IP address. Proxying the firewall requests is NOT supported when using SCM.
 
 Reference:
 
