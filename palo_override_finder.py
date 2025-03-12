@@ -298,17 +298,18 @@ def request_bearer(endpoint, cid, secret, tsg):
     """https://pan.dev/scm/docs/access-tokens/"""
     hub_req = requests.Session()
     logging.debug('Session to request Bearer token from Hub API is %s', hub_req)
-    hub_req.headers.update({'Content-Type': 'application/json'})
+    hub_req.headers.update({'Content-Type': 'application/x-www-form-urlencoded'})
     hub_req.auth = (cid, secret)  # Recommended to put these in Basic Auth instead of the POST body
     auth_obj = {'scope': f'tsg_id:{tsg}',
                 'grant_type': 'client_credentials'}
     try:
-        response = hub_req.post(f'https://{endpoint}/oauth2/access_token', json=auth_obj, timeout=CONN_TIMEOUT)
+        response = hub_req.post(f'https://{endpoint}/oauth2/access_token', data=auth_obj, timeout=CONN_TIMEOUT)
         logging.debug('Got response from SCM with code %s when retrieving Bearer token', response.status_code)
         response.raise_for_status()
+        logging.debug('Got response: %s', response.text)
         hub_response = json.loads(response.text)
         logging.info('Got json response of length %d', len(hub_response))
-        return hub_response['client_credentials']
+        return hub_response['access_token']
     except requests.exceptions.HTTPError:
         logger.critical('Received HTTP code %s while querying SCM at %s', response.status_code, endpoint)
         raise
@@ -501,23 +502,24 @@ if __name__ == '__main__':
             else:
                 logging.warning('Bearer token or complete credentials to generate it were not passed as argument. '
                                 'Checking in configuration file')
-                try:
-                    logging.info('Attempting to read Bearer token from %s', CFG_FILENAME)
-                    config.read(CFG_FILENAME)
-                    key_section = config['SCM']
-                    BEARER_TOKEN = str(key_section.get('BEARER_TOKEN'))
+                logging.info('Attempting to read Bearer token from %s', CFG_FILENAME)
+                config.read(CFG_FILENAME)
+                key_section = config['SCM']
+                BEARER_TOKEN = key_section.get('BEARER_TOKEN')
+                if BEARER_TOKEN:
                     logging.info('Successfully retrieved Bearer token')
-                except configparser.Error as err:
+                    BEARER_TOKEN = str(BEARER_TOKEN)
+                else:
                     logging.info('Bearer token not found in configuration file, looking for CLIENT_ID and CLIENT_SECRET'
                                  ' and TSG_ID instead')
                     try:
                         key_section = config['SCM']
                         logging.info('Attempting to read CLIENT_ID from %s', CFG_FILENAME)
-                        CLIENT_ID = str(key_section.get('CLIENT_ID'))
+                        CLIENT_ID = key_section.get('CLIENT_ID')
                         logging.info('Attempting to read CLIENT_SECRET from %s', CFG_FILENAME)
-                        CLIENT_SECRET = str(key_section.get('CLIENT_SECRET'))
+                        CLIENT_SECRET = key_section.get('CLIENT_SECRET')
                         logging.info('Attempting to read TSG_ID from %s', CFG_FILENAME)
-                        TSG_ID = str(key_section.get('TSG_ID'))
+                        TSG_ID = key_section.get('TSG_ID')
                         if not (CLIENT_ID and CLIENT_SECRET and TSG_ID):
                             logging.critical('One of CLIENT_ID, CLIENT_SECRET, or TSG_ID are empty in config file. '
                                              'Exiting...')
